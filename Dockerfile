@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV TZ=Europe/Oslo
 ENV PYTHONUNBUFFERED=1
 
+COPY handoff-package/ ./handoff-package/
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

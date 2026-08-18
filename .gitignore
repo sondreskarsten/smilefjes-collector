@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
+*.egg-info/
 data/
+dist/
 .env
 *.csv
 *.csv.gz

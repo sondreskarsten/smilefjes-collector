@@ -1,0 +1,90 @@
+name: Collect Smilefjes
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 4 * * *"
+
+permissions: {}
+
+concurrency:
+  group: smilefjes-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Set capture identity
+        shell: bash
+        run: |
+          capture_date="$(date -u +%F)"
+          capture_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "RUN_DATE=$capture_date" >> "$GITHUB_ENV"
+          echo "RUN_ID=${{ github.run_id }}" >> "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=${{ github.sha }}" >> "$GITHUB_ENV"
+          echo "RETRIEVED_AT_UTC=$capture_time" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=smilefjes-${capture_date}-run-${{ github.run_id }}" >> "$GITHUB_ENV"
+
+      - name: Capture source pair
+        run: python collect.py
+        env:
+          OUTPUT_DIR: dist
+
+      - name: Publish verified pair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          data_asset="dist/${RELEASE_TAG}.tar.gz"
+          metadata_asset="dist/${RELEASE_TAG}.metadata.json"
+
+          python -m file_pair_handoff verify-local \
+            --data "$data_asset" \
+            --metadata "$metadata_asset"
+
+          if gh release view "$RELEASE_TAG" --json isDraft > release-before.json 2>/dev/null; then
+            test "$(jq -r .isDraft release-before.json)" = "true" || {
+              echo "refusing to replace published release $RELEASE_TAG" >&2
+              exit 1
+            }
+          else
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title "Smilefjes $RUN_DATE" \
+              --notes "Raw Smilefjes capture $RUN_DATE; metadata is a separate asset."
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            "$data_asset#data" \
+            "$metadata_asset#metadata" \
+            --clobber
+          gh release view "$RELEASE_TAG" --json isDraft,assets > release-after.json
+
+          python -m file_pair_handoff verify-draft-release \
+            --release-json release-after.json \
+            --data "$data_asset" \
+            --metadata "$metadata_asset"
+
+          gh release edit "$RELEASE_TAG" --draft=false

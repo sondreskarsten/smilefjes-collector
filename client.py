@@ -5,15 +5,15 @@ Two cumulative CSV dumps published daily at::
     https://matnyttig.mattilsynet.no/smilefjes/tilsyn.csv
     https://matnyttig.mattilsynet.no/smilefjes/vurderinger.csv
 
-No authentication. CC BY 4.0. UTF-8 with BOM, semicolon-delimited.
-Each fetch returns the full cumulative dataset (not incremental); the
-parser handles CDC against prior state.
+No authentication. CC BY 4.0. UTF-8, semicolon-delimited. A publisher BOM,
+when present, is preserved. Each fetch returns the full cumulative dataset.
 
 ``dato`` fields in both CSVs use ``ddmmyyyy`` format (no separators).
 """
 
 import requests
-import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 BASE = "https://matnyttig.mattilsynet.no/smilefjes"
@@ -33,14 +33,25 @@ class SmilefjesClient:
         Running count of HTTP requests issued in this session.
     """
 
-    def __init__(self, timeout=120):
+    def __init__(self, timeout: int = 120):
         self.timeout = timeout
         self._session = requests.Session()
         self._session.headers["Accept"] = "text/csv, */*"
         self._session.headers["User-Agent"] = "smilefjes-collector/1.0 (Sondre Skarsten)"
+        retry = Retry(
+            total=5,
+            backoff_factor=0.2,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET"}),
+            raise_on_status=False,
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
         self._request_count = 0
 
-    def fetch(self, dataset):
+    def fetch(self, dataset: str) -> bytes:
         """Fetch one dataset as raw bytes.
 
         Parameters
@@ -51,7 +62,7 @@ class SmilefjesClient:
         Returns
         -------
         bytes
-            Raw CSV bytes with UTF-8 BOM stripped.
+            Exact raw CSV bytes returned by the publisher.
 
         Raises
         ------
@@ -62,7 +73,4 @@ class SmilefjesClient:
         self._request_count += 1
         r = self._session.get(url, timeout=self.timeout)
         r.raise_for_status()
-        body = r.content
-        if body.startswith(b"\xef\xbb\xbf"):
-            body = body[3:]
-        return body
+        return r.content
